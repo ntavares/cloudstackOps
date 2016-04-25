@@ -683,6 +683,7 @@ Usage: ./listAdvisories.py [options]
   -n 		Scan networks (incl. VPCs)
   -r 		Scan routerVMs
   -i 		Scan instances
+  -s 		Scan systemVMs
   -H 		Scan hypervisors
   -t 		Scan resource usage
   --all 	Report all assets of the selected types, independently of the presence of advisory
@@ -695,20 +696,22 @@ actions supported, along in which "depth" level:
 $ ./listAdvisories.py -h --deep
 
 List of tests available
-+------------+--------+---------------------------------------------------------------------------------+-----------+----------+
-|   Scope    | Level  | Symptom / Probe / Detection                                                     | Detection | Recovery |
-+------------+--------+---------------------------------------------------------------------------------+-----------+----------+
-|  network   | Normal | Flag restart_required                                                           |    True   |   True   |
-|   router   | Normal | Redundancy state                                                                |    True   |   True   |
-|   router   | Normal | Output of check_router.sh is non-zero (dmesg,swap,resolv,ping,fs,disk,password) |    True   |   True   |
-|   router   |  Deep  | Checks if router is running on the current systemvm template version            |    True   |   True   |
-|  instance  | Normal | Try to assess instance read-only state                                          |    True   |  False   |
-|  instance  | Normal | Queries libvirt usage records for abusers (CPU, I/O, etc)                       |    True   |  False   |
-| hypervisor | Normal | Agent state (version, conn state)                                               |    True   |  False   |
-| hypervisor | Normal | Load average                                                                    |    True   |  False   |
-| hypervisor | Normal | Conntrack abusers                                                               |    True   |  False   |
-| hypervisor | Normal | check_libvirt_storage.sh correct functioning                                    |    True   |  False   |
-+------------+--------+---------------------------------------------------------------------------------+-----------+----------+
++------------+--------+--------------------------------------------------------------------------------------+-----------+----------+
+|   Scope    | Level  | Symptom / Probe / Detection                                                          | Detection | Recovery |
++------------+--------+--------------------------------------------------------------------------------------+-----------+----------+
+|  network   | Normal | Flag restart_required                                                                |    True   |   True   |
+|   router   | Normal | Redundancy state                                                                     |    True   |   True   |
+|   router   | Normal | Output of check_routervms.py is non-zero (dmesg,swap,resolv,ping,fs,disk,password)   |    True   |   True   |
+|   router   |  Deep  | Checks if router is running with the latest systemvm template version                |    True   |   True   |
+|  instance  | Normal | Try to assess instance read-only state                                               |    True   |  False   |
+|  instance  | Normal | Queries libvirt usage records for abusers (CPU, I/O, etc)                            |    True   |  False   |
+| hypervisor | Normal | Agent state (version, conn state)                                                    |    True   |  False   |
+| hypervisor | Normal | Load average                                                                         |    True   |  False   |
+| hypervisor | Normal | Conntrack abusers                                                                    |    True   |  False   |
+| hypervisor | Normal | check_libvirt_storage.sh correct functioning                                         |    True   |  False   |
+|  systemvm  | Normal | Output of check_appliance.py is non-zero (dmesg,swap,resolv,ping,fs,disk,websockify) |    True   |   True   |
+|  systemvm  |  Deep  | Checks if systemvm is running with the latest systemvm template version              |    True   |   True   |
++------------+--------+--------------------------------------------------------------------------------------+-----------+----------+
 ```
 
 Bugs

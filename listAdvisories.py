@@ -51,6 +51,7 @@ ACTION_I_THROTTLE = 'throttle'
 ACTION_UNKNOWN = 'unknown'
 ACTION_MANUAL = 'manual'
 ACTION_ESCALATE = 'escalate'
+ACTION_S_DESTROY = 'destroy'
 
 STATE_ALLOCATED = 'Allocated'
 
@@ -105,6 +106,8 @@ def handleArguments(argv):
     opFilterInstances = False
     global opFilterHosts
     opFilterHosts = False
+    global opFilterSystemVMs
+    opFilterSystemVMs = False
     global opFilterResources
     opFilterResources = False
     global opFilterAll
@@ -118,6 +121,8 @@ def handleArguments(argv):
     global MGMT_SERVER
     global MGMT_SERVER_DATA
     MGMT_SERVER_DATA = {}
+    global routerTemplateId
+    routerTemplateId = None
 
     # Usage message
     help = "Usage: ./" + os.path.basename(__file__) + ' [options] ' + \
@@ -136,6 +141,7 @@ def handleArguments(argv):
         '\n  -n \t\tScan networks (incl. VPCs)' + \
         '\n  -r \t\tScan routerVMs' + \
         '\n  -i \t\tScan instances' + \
+        '\n  -s \t\tScan systemVMs' + \
         '\n  -H \t\tScan hypervisors' + \
         '\n  -t \t\tScan resource usage' + \
         '\n  --all \tReport all assets of the selected types, independently of the presence of advisory' + \
@@ -143,7 +149,7 @@ def handleArguments(argv):
 
     try:
         opts, args = getopt.getopt(
-            argv, "hc:nriHt", [
+            argv, "hc:nriHts", [
                 "config-profile=", "debug", "exec", "deep", "live", "plain-display", "all", "repair", "safety=", 'email' ])
     except getopt.GetoptError as e:
         print "Error: " + str(e)
@@ -182,6 +188,8 @@ def handleArguments(argv):
             opFilterRouters = True
         elif opt in ("-i"):
             opFilterInstances = True
+        elif opt in ("-s"):
+            opFilterSystemVMs = True
         elif opt in ("-H"):
             opFilterHosts = True
         elif opt in ("--t"):
@@ -208,14 +216,16 @@ def handleArguments(argv):
 
         t.add_row([ "network", "Normal", "Flag restart_required", True, True ])
         t.add_row([ "router", "Normal", "Redundancy state", True, True ])
-        t.add_row([ "router", "Normal", "Output of check_router.sh is non-zero (dmesg,swap,resolv,ping,fs,disk,password)", True, True ])
-        t.add_row([ "router", "Deep", "Checks if router is running on the current systemvm template version", True, True ])
+        t.add_row([ "router", "Normal", "Output of check_routervms.py is non-zero (dmesg,swap,resolv,ping,fs,disk,password)", True, True ])
+        t.add_row([ "router", "Deep", "Checks if router is running with the latest systemvm template version", True, True ])
         t.add_row([ "instance", "Normal", "Try to assess instance read-only state", True, False ])
         t.add_row([ "instance", "Normal", "Queries libvirt usage records for abusers (CPU, I/O, etc)", True, False ])
         t.add_row([ "hypervisor", "Normal", "Agent state (version, conn state)", True, False ])
         t.add_row([ "hypervisor", "Normal", "Load average", True, False ])
         t.add_row([ "hypervisor", "Normal", "Conntrack abusers", True, False ])
         t.add_row([ "hypervisor", "Normal", "check_libvirt_storage.sh correct functioning", True, False ])
+        t.add_row([ "systemvm", "Normal", "Output of check_appliance.py is non-zero (dmesg,swap,resolv,ping,fs,disk,websockify)", True, True ])
+        t.add_row([ "systemvm", "Deep", "Checks if systemvm is running with the latest systemvm template version", True, True ])
 
         print t
         
@@ -263,8 +273,26 @@ if DEBUG == 1:
     print "ApiKey: " + c.apikey
     print "SecretKey: " + c.secretkey
 
-#
-# TODO : examine conntrack
+
+# One of the router tests we can make is to assess it's template version, if it's 
+# current to the Global Setting router.template.kvm, so let's fetch that one.
+confrtpl = c.getConfiguration("router.template.kvm" )
+routerTemplateName = confrtpl[0].value
+# Watch out for the use of "keyword". It should be "name", but Marvin API returns more results than expected..
+routerTemplateData = c.listTemplates({'templatefilter': 'all', 'keyword': routerTemplateName, 'listall': 'True'})
+
+if type(routerTemplateData) is not list:
+    print "ERROR: Failed to acquire the current router template"
+    sys.exit(2)
+
+for r in routerTemplateData:
+    if r.name == routerTemplateName:
+        routerTemplateId = r.id
+
+if routerTemplateId == None:
+    print "WARNING: Could not find the 'router.template.kvm' setting (name: %s)" % (routerTemplateName)
+
+
 
 def normalizePackageVersion(versionstr):
     # At LSW, RPM version differs in the bugfix version number between - (Ubuntu) and . (CentOS)
@@ -420,6 +448,91 @@ def getAdvisoriesInstances(alarmedInstancesCache):
     debug(2, "getAdvisoriesInstances : end")
     return results
 
+def getAdvisoriesSystemVMs():
+    debug(2, "getAdvisoriesSystemVMs : begin")
+    results = []
+    
+    def resolveSystemVMErrorCode(errorCode):
+        str = []
+        errorCode = int(errorCode)
+        if errorCode & 1:
+            str = str + [ 'dmesg' ]
+        if errorCode & 2:
+            str = str + [ 'swap' ]
+        if errorCode & 4:
+            str = str + [ 'resolver' ]
+        if errorCode & 8:
+            str = str + [ 'ping' ]
+        if errorCode & 16:
+            str = str + [ 'filesystem' ]
+        if errorCode & 32:
+            str = str + [ 'disk' ]
+        if errorCode & 64:
+            str = str + [ 'websockify' ]
+        if errorCode & 128:
+            str = str + [ 'reserved' ]
+        if errorCode & 256:
+            str = str + [ 'check_routervms.py' ]
+        return ",".join(str)
+
+    def examineSystemVMInternalsLive(svm):
+        debug(2, "   + svm: name: %s, ip=%s, host=%s, tpl=%s" % (svm.name, svm.linklocalip, svm.hostname, (svm.version if svm.templateversion==None else svm.templateversion)))
+
+        mgtSsh = "/usr/local/bin/check_appliance.py " + svm.name
+        retcode, output = c.ssh.runSSHCommand(MGMT_SERVER, mgtSsh)
+        if retcode != 0:
+            return 256, "check_appliance.py returned errors"
+            
+        lines = output.split('\n')
+        retcode = int(lines[-1])
+        output = "check_appliance returned errors"
+        debug(2, "   + cmd: " + mgtSsh)
+        debug(2, "       + retcode=%d" % (retcode))
+
+        return retcode, output
+
+    def getActionForStatus(statuscode, svm):
+        # If the helper scripts do not exist at the mgt server, the call returns exit code 256.
+        if statuscode==256:
+            return ACTION_ESCALATE, SAFETY_NA
+
+        return ACTION_S_DESTROY, SAFETY_GOOD
+
+    def examineSystemVMInternals(svm, currentRouterTemplateId):
+
+        # We now assess if the router VM template is current
+        if (DEEPSCAN==1) and (currentRouterTemplateId!=None):
+            if svm.templateid != currentRouterTemplateId:
+                return {'action': ACTION_S_DESTROY, 'safetylevel': SAFETY_GOOD, 'comment': 'SystemvM using obsolete template'}
+
+        # We should now try to assess the systemvm internal status (with SSH)
+        retcode, output = examineSystemVMInternalsLive(svm)
+
+        if retcode != 0:
+            action, safetylevel = getActionForStatus(retcode, svm)
+            return {'action': action, 'safetylevel': safetylevel, 'comment': output + ": " + str(retcode) + " (" + resolveSystemVMErrorCode(retcode) + ")" }
+
+        return {'action': None, 'safetylevel': SAFETY_NA, 'comment': ''}
+
+    svmData = c.getSystemVmData({})
+    for svm in svmData:
+        print "name=" + svm.name + ", type=" + svm.systemvmtype
+        
+        svmtype = '????'
+        if svm.systemvmtype=='consoleproxy':
+            svmtype = 'cpvm'
+        elif svm.systemvmtype=='secondarystoragevm':
+            svmtype = 'ssvm'
+
+        # We should now try to assess the systemvm internal status (with SSH)
+        diag = examineSystemVMInternals(svm, routerTemplateId)
+        
+        if ( opFilterAll or (diag['action'] != None) ):
+            results = results + [{ 'id': svm.id, 'name': svm.name, 'domain': svm.domain, 'asset_type': svmtype, 'adv_action': diag['action'], 'adv_safetylevel': diag['safetylevel'], 'adv_comment': diag['comment'] }]
+
+    debug(2, "getAdvisoriesSystemVMs : end")
+    return results
+
 def getAdvisoriesNetworks(alarmedRoutersCache):
     debug(2, "getAdvisoriesNetworks/Routers : begin")
     
@@ -453,7 +566,7 @@ def getAdvisoriesNetworks(alarmedRoutersCache):
     # Use this when you want to inspect routers real-time
     # Note: Development was dropped in favor of examineRouterInternalsQuick()
     # TODO we should provide a --deep switch
-    def examineRouterInternalsDeep(alarmedRoutersCache, router):
+    def examineRouterInternalsLive(alarmedRoutersCache, router):
         debug(2, "   + router: name: %s, ip=%s, host=%s, tpl=%s" % (router.name, router.linklocalip, router.hostname, (router.version if router.templateversion==None else router.templateversion)))
 
         # Use the cache anyway, to mark already checked routers:
@@ -465,7 +578,7 @@ def getAdvisoriesNetworks(alarmedRoutersCache):
         mgtSsh = "/usr/local/bin/check_routervms.py " + router.name
         retcode, output = c.ssh.runSSHCommand(MGMT_SERVER, mgtSsh)
         if retcode != 0:
-            return "256", "check_routervms.py returned errors"
+            return 256, "check_routervms.py returned errors"
             
         lines = output.split('\n')
         retcode = int(lines[-1])
@@ -546,7 +659,7 @@ def getAdvisoriesNetworks(alarmedRoutersCache):
         if QUICKSCAN==1:
             retcode, output = examineRouterInternalsQuick(alarmedRoutersCache, router)
         else:
-            retcode, output = examineRouterInternalsDeep(alarmedRoutersCache, router)
+            retcode, output = examineRouterInternalsLive(alarmedRoutersCache, router)
 
         if retcode != 0:
             action, safetylevel = getActionForStatus(retcode, router, network.rr_type, network.type)
@@ -564,26 +677,6 @@ def getAdvisoriesNetworks(alarmedRoutersCache):
                         return {'action': ACTION_ESCALATE, 'safetylevel': SAFETY_DOWNTIME, 'comment': 'Router using obsolete template, no redundancy'}
 
         return {'action': None, 'safetylevel': SAFETY_NA, 'comment': ''}
-
-
-    # One of the router tests we can make is to assess it's template version, if it's 
-    # current to the Global Setting router.template.kvm, so let's fetch that one.
-    confrtpl = c.getConfiguration("router.template.kvm" )
-    routerTemplateName = confrtpl[0].value
-    # Watch out for the use of "keyword". It should be "name", but Marvin API returns more results than expected..
-    routerTemplateData = c.listTemplates({'templatefilter': 'all', 'keyword': routerTemplateName, 'listall': 'True'})
-    routerTemplateId = None
-    
-    if type(routerTemplateData) is not list:
-        print "ERROR: Failed to acquire the current router template"
-        sys.exit(2)
-
-    for r in routerTemplateData:
-        if r.name == routerTemplateName:
-            routerTemplateId = r.id
-
-    if routerTemplateId == None:
-        print "WARNING: Could not find the 'router.template.kvm' setting (name: %s)" % (routerTemplateName)
 
 
     networkData = c.listNetworks({})
@@ -732,6 +825,8 @@ def getAdvisories():
         results = results + getAdvisoriesInstances(alarmedInstancesCache)
     if opFilterResources:
         results = results + getAdvisoriesResources()
+    if opFilterSystemVMs:
+        results = results + getAdvisoriesSystemVMs()
 
     def getSortKey(item):
         return item['asset_type'].upper() + '-' + item['name'].upper() 
@@ -837,6 +932,27 @@ def repairNetwork(adv):
 
     return -1, 'Not implemented'
 
+def repairSystemVM(adv):
+    debug(2, "repairSystemVM(): systemvm:%s, action:%s" % (adv['name'], adv['adv_action']))
+    
+    if adv['adv_action'] == None:
+        return -2, ''
+
+    if adv['adv_action']==ACTION_S_DESTROY:
+        if SAFETYLEVEL==adv['adv_safetylevel']:
+            debug(2, ' + destroy systemvm.name=%s, .id=%s' % (adv['name'], adv['id']))
+            if DRYRUN==1:
+                return -2, 'Skipping, dryrun is on.'
+            print "Destroying systemVM '%s'" % (adv['name'])
+            ret = c.destroySystemVM(adv['id'])
+            debug(2, " + ret = " + str(ret))
+            
+            return 0, 'SystemVM destroyed without errors.'
+        else:
+            return -2, 'Ignored by SafetyLevel scope (' + translateSafetyLevel(SAFETYLEVEL) + ')'
+
+    return -1, 'Not implemented'
+
 
 def cmdRepair():
     debug(2, "cmdRepair : begin")
@@ -847,6 +963,9 @@ def cmdRepair():
             applied,output = repairRouter(adv)
         if opFilterNetworks and (adv['asset_type'] == 'network'):
             applied, output = repairNetwork(adv)
+        if opFilterSystemVMs and (adv['asset_type'] in ['cpvm', 'ssvm']):
+            applied, output = repairSystemVM(adv)
+
         if applied==0:
             adv['repair_code'] = 'OK'
             adv['repair_msg'] = 'Repair successful: ' + output
