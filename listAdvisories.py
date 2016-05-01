@@ -215,9 +215,12 @@ def handleArguments(argv):
             t.padding_width = 1
 
         t.add_row([ "network", "Normal", "Flag restart_required", True, True ])
+        t.add_row([ "network", "Normal", "Redundancy state inconsistency (needs -r)", True, True ])
         t.add_row([ "router", "Normal", "Redundancy state", True, True ])
         t.add_row([ "router", "Normal", "Output of check_routervms.py is non-zero (dmesg,swap,resolv,ping,fs,disk,password)", True, True ])
         t.add_row([ "router", "Deep", "Checks if router is running with the latest systemvm template version", True, True ])
+        t.add_row([ "router", "Normal", "Checks if router has requiresUpgrade flag on", True, True ])
+        t.add_row([ "router", "Deep", "Checks if router is based on the same package version than management (router.cloudstackversion)", True, True ])
         t.add_row([ "instance", "Normal", "Try to assess instance read-only state", True, False ])
         t.add_row([ "instance", "Normal", "Queries libvirt usage records for abusers (CPU, I/O, etc)", True, False ])
         t.add_row([ "hypervisor", "Normal", "Agent state (version, conn state)", True, False ])
@@ -303,9 +306,42 @@ def normalizePackageVersion(versionstr):
     #return regex.sub('\1-\2', versionstr)
     return versionstr.replace('.', '-')
 
+def csVersionCompare(aver,bver):
+   vstr = r'(\d+)[\.-](\d+)[\.-](\d+)-leaseweb(\d+)[\.-]*(\d+)*'
+   a = re.match(vstr, aver)
+   b = re.match(vstr, bver)
+
+   print "   + csVersionCompare(%s, %s) ==> %s, %s" % (aver, bver, a.group(5), b.group(5))
+   if int(a.group(1)) > int(b.group(1)):
+      return 1
+   elif int(a.group(1)) < int(b.group(1)):
+      return -1
+   elif int(a.group(2)) > int(b.group(2)):
+      return 2
+   elif int(a.group(2)) < int(b.group(2)):
+      return -2
+   elif int(a.group(3)) > int(b.group(3)):
+      return 3
+   elif int(a.group(3)) < int(b.group(3)):
+      return -3
+   elif int(a.group(4)) > int(b.group(4)):
+      return 4
+   elif int(a.group(4)) < int(b.group(4)):
+      return -4
+   elif ((a.group(5)==None) and (b.group(5)!=None)) or ((a.group(5)!=None) and (b.group(5)!=None) and (int(a.group(5)) < int(b.group(5)))):
+      return -5
+   elif ((a.group(5)!=None) and (b.group(5)==None)) or ((a.group(5)!=None) and (b.group(5)!=None) and (int(a.group(5)) > int(b.group(5)))):
+      return 5
+   return 0
+
 def examineHost(alarmedInstancesCache, host):
     def getHostIp(host):
+        # Unfortunatel, cs00 used FQDNs in the node name
+        if host.name.find('.')!=-1:
+           (hostname, hostdomain) = host.name.split('.', 1)
+           host.name = hostname
         return host.name + "." + PLATFORM
+
     ENABLED_INSPECTIONS = []
     ENABLED_INSPECTIONS += [ 'io-abuse' ]
     ENABLED_INSPECTIONS += [ 'conntrack' ]
@@ -397,20 +433,39 @@ def getAdvisoriesResources():
     debug(2, "getAdvisoriesResources : begin")
     results = []
     
+    debug(2, " + checking check_free_vcpus")
     mgtSsh = "/usr/local/nagios/libexec/nrpe_local/check_free_vcpus"
     retcode, output = c.ssh.runSSHCommand(MGMT_SERVER, mgtSsh)
     if retcode != 0:
+        if output == '':
+            output = 'return code: ' + str(retcode)
         results += [{ 'id': '', 'name': 'free-vcpu', 'domain': 'ROOT', 'asset_type': 'resource', 'adv_action': ACTION_MANUAL, 'adv_safetylevel': SAFETY_NA, 'adv_comment': output}]
 
+    debug(2, " + checking check_free_ips")
     mgtSsh = "/usr/local/nagios/libexec/nrpe_local/check_free_ips"
     retcode, output = c.ssh.runSSHCommand(MGMT_SERVER, mgtSsh)
     if retcode != 0:
+        if output == '':
+            output = 'return code: ' + str(retcode)
         results += [{ 'id': '', 'name': 'free-ip', 'domain': 'ROOT', 'asset_type': 'resource', 'adv_action': ACTION_MANUAL, 'adv_safetylevel': SAFETY_NA, 'adv_comment': output}]
 
+    debug(2, " + checking check_cloud_agents")
     mgtSsh = "/usr/local/nagios/libexec/nrpe_local/check_cloud_agents"
     retcode, output = c.ssh.runSSHCommand(MGMT_SERVER, mgtSsh)
     if retcode != 0:
+        if output == '':
+            output = 'return code: ' + str(retcode)
         results += [{ 'id': '', 'name': 'cloud-agents', 'domain': 'ROOT', 'asset_type': 'resource', 'adv_action': ACTION_MANUAL, 'adv_safetylevel': SAFETY_NA, 'adv_comment': output}]
+
+    # Taken from /usr/local/nagios/libexec/check_zone_resources
+    debug(2, " + checking check_zone_resources")
+    mgtSsh = "(cloudmonkey listCapacity type=0 | grep percentused | cut -d '\"' -f 4; cloudmonkey listCapacity type=1 | grep percentused | cut -d '\"' -f 4) | xargs"
+    retcode, output = c.ssh.runSSHCommand(MGMT_SERVER, mgtSsh)
+    (memory, cpu) = output.split(' ')
+    if retcode != 0:
+        if output == '':
+            output = 'return code: ' + str(retcode)
+        results += [{ 'id': '', 'name': 'capacity', 'domain': 'ROOT', 'asset_type': 'resource', 'adv_action': ACTION_MANUAL, 'adv_safetylevel': SAFETY_NA, 'adv_comment': 'check_zone_resources breached thresholds, mem=' + memory + ', cpu=' + cpu }]
 
     debug(2, "getAdvisoriesResources : end")
     return results
@@ -539,7 +594,7 @@ def getAdvisoriesNetworks(alarmedRoutersCache):
     results = []
 
     # This method will analyse the network and return an advisory
-    def examineNetwork(network, advRouters):
+    def examineNetwork(network, advRouters, redundantstate):
         if network.restartrequired:
             if network.rr_type:
                 return {'action': ACTION_N_RESTART, 'safetylevel': SAFETY_BEST, 'comment': 'Restart flag on, redundancy present'}
@@ -549,6 +604,10 @@ def getAdvisoriesNetworks(alarmedRoutersCache):
                  else:
                      return {'action': ACTION_N_RESTART, 'safetylevel': SAFETY_DOWNTIME, 'comment': 'Restart flag on, no redundancy'}
 
+        debug(2, ' + check redundantstate => ' + str(redundantstate) )
+        if redundantstate['flags'] != 3:
+            return {'action': ACTION_N_RESTART, 'safetylevel': SAFETY_UNKNOWN, 'comment': 'Redundancy state is found inconsistent (' + ','.join(redundantstate['states']) + ')'}
+
         if len(advRouters)>0:
             rnames = [];
             for r in advRouters:
@@ -557,9 +616,9 @@ def getAdvisoriesNetworks(alarmedRoutersCache):
                 return {'action': ACTION_N_RESTART, 'safetylevel': SAFETY_BEST, 'comment': 'Network tainted (State:' + network.state + '), problems found with router(s): ' + ','.join(rnames)}
             else:
                 if network.type == 'Shared':
-                    return {'action': ACTION_N_RESTART, 'safetylevel': SAFETY_GOOD, 'comment': 'Network tainted (State:' + network.state + '), problems found with router(s): '+ ','.join(rnames)}
+                    return {'action': ACTION_N_RESTART, 'safetylevel': SAFETY_GOOD, 'comment': 'Network tainted (State:' + network.state + '), problems found with router(s): ' + ','.join(rnames)}
                 else:
-                    return {'action': ACTION_N_RESTART, 'safetylevel': SAFETY_DOWNTIME, 'comment': 'Network tainted (State:' + network.state + '), problems found with router(s): '+ ','.join(rnames)}
+                    return {'action': ACTION_N_RESTART, 'safetylevel': SAFETY_DOWNTIME, 'comment': 'Network tainted (State:' + network.state + '), problems found with router(s): ' + ','.join(rnames)}
             
         return {'action': None, 'safetylevel': SAFETY_NA, 'comment': ''}
 
@@ -648,12 +707,18 @@ def getAdvisoriesNetworks(alarmedRoutersCache):
         return ACTION_UNKNOWN, SAFETY_UNKNOWN
 
     def examineRouter(alarmedRoutersCache, network, router, currentRouterTemplateId):
+        if router.requiresupgrade:
+            if network.rr_type:
+                return {'action': ACTION_ESCALATE, 'safetylevel': SAFETY_BEST, 'comment': 'Redundancy requires upgrade, redundancy present'}
+            else:
+                return {'action': ACTION_ESCALATE, 'safetylevel': SAFETY_DOWNTIME, 'comment': 'Redundancy requires upgrade, no redundancy'}
+        
         if router.isredundantrouter and (router.redundantstate not in ['MASTER', 'BACKUP']):
             if network.rr_type:
                 return {'action': ACTION_ESCALATE, 'safetylevel': SAFETY_BEST, 'comment': 'Redundancy state broken (' + router.redundantstate + '), redundancy present'}
             else:
                 return {'action': ACTION_ESCALATE, 'safetylevel': SAFETY_DOWNTIME, 'comment': 'Redundancy state broken (' + router.redundantstate + '), no redundancy'}
-        
+
         # We should now try to assess the router internal status (with SSH)
         #retcode, output = examineRouterInternals(router)
         if QUICKSCAN==1:
@@ -676,7 +741,42 @@ def getAdvisoriesNetworks(alarmedRoutersCache):
                     else:
                         return {'action': ACTION_ESCALATE, 'safetylevel': SAFETY_DOWNTIME, 'comment': 'Router using obsolete template, no redundancy'}
 
+        rversion = normalizePackageVersion(router.cloudstackversion)
+        if (DEEPSCAN==1) and (router.cloudstackversion):
+            rversion = normalizePackageVersion(router.cloudstackversion)
+            # If the router version is more recent than the package, then there probably emergency patching was made
+            # so, it's not really a problem, nor suprising.
+            if csVersionCompare(rversion,MGMT_SERVER_DATA['version.normalized'])<0:
+                if network.rr_type:
+                    return {'action': ACTION_ESCALATE, 'safetylevel': SAFETY_BEST, 'comment': 'Router in deprecated version, redundancy presentt'}
+                else:
+                    if network.type == 'Shared':
+                        return {'action': ACTION_ESCALATE, 'safetylevel': SAFETY_GOOD, 'comment': 'Router in deprecated version, redundancy not critical'}
+                    else:
+                        return {'action': ACTION_ESCALATE, 'safetylevel': SAFETY_DOWNTIME, 'comment': 'Router in deprecated version, no redundancy'}
+                
+
         return {'action': None, 'safetylevel': SAFETY_NA, 'comment': ''}
+
+
+    # One of the router tests we can make is to assess it's template version, if it's 
+    # current to the Global Setting router.template.kvm, so let's fetch that one.
+    confrtpl = c.getConfiguration("router.template.kvm" )
+    routerTemplateName = confrtpl[0].value
+    # Watch out for the use of "keyword". It should be "name", but Marvin API returns more results than expected..
+    routerTemplateData = c.listTemplates({'templatefilter': 'all', 'keyword': routerTemplateName, 'listall': 'True', 'state': 'Active'})
+    routerTemplateId = None
+    
+    if type(routerTemplateData) is not list:
+        print "ERROR: Failed to acquire the current router template"
+        sys.exit(2)
+
+    for r in routerTemplateData:
+        if r.name == routerTemplateName:
+            routerTemplateId = r.id
+
+    if routerTemplateId == None:
+        print "WARNING: Could not find the 'router.template.kvm' setting (name: %s)" % (routerTemplateName)
 
 
     networkData = c.listNetworks({})
@@ -699,6 +799,7 @@ def getAdvisoriesNetworks(alarmedRoutersCache):
                                 network.rr_type = True
 
         escalated = []
+        redundantstate = { 'flags': 0, 'states': [] }
         if opFilterRouters:
             # A network in state Allocated probably has routers Offline.
             # In that case, redundancystate will always be UNKNOWN or even unexplicable states
@@ -706,14 +807,24 @@ def getAdvisoriesNetworks(alarmedRoutersCache):
                 routersData = c.getRouterData({'networkid': network.id})
                 if routersData:
                     for r in routersData:
+                        # redundantstate consistency has to be out since examineRouter only can analyse individual routers
+                        if r.isredundantrouter:
+                            if r.redundantstate == 'BACKUP':
+                               redundantstate['flags'] = redundantstate['flags'] | 1
+                            elif r.redundantstate == 'MASTER':
+                               redundantstate['flags'] = redundantstate['flags'] | 2
+                            redundantstate['states'] = redundantstate['states'] + [ r.redundantstate ]
                         diag = examineRouter(alarmedRoutersCache, network, r, routerTemplateId)
                         if ( opFilterAll or (diag['action'] != None) ):
                             if diag['action'] == ACTION_ESCALATE:
                                 escalated = escalated + [{ 'id': r.id, 'name': r.name, 'domain': network.domain, 'asset_type': 'router', 'adv_action': diag['action'], 'adv_safetylevel': diag['safetylevel'], 'adv_comment': diag['comment'] }]
                             results = results + [{ 'id': r.id, 'name': r.name, 'domain': network.domain, 'asset_type': 'router', 'adv_action': diag['action'], 'adv_safetylevel': diag['safetylevel'], 'adv_comment': diag['comment'] }]
 
-        
-        diag = examineNetwork(network, escalated)
+        if not network.rr_type or not opFilterRouters:
+            # silence redundantstate check
+            redundantstate['flags'] = 1 | 2
+
+        diag = examineNetwork(network, escalated, redundantstate)
         if ( opFilterNetworks and (opFilterAll or (diag['action'] != None)) ):
             results = results + [{ 'id': network.id, 'type': net_type, 'name': network.name, 'domain': network.domain, 'rr_type': network.rr_type, 'restartrequired': network.restartrequired, 'state': network.state, 'asset_type': 'network', 'adv_action': diag['action'], 'adv_safetylevel': diag['safetylevel'], 'adv_comment': diag['comment'] }]
 
@@ -725,10 +836,18 @@ def getAdvisoriesNetworks(alarmedRoutersCache):
             vpc.rr_type = vpc.redundantvpcrouter
 
         escalated = []
+        redundantstate = { 'flags': 0, 'states': [] }
         if opFilterRouters:
             routersData = c.getRouterData({'vpcid': vpc.id})
             if routersData:
                 for r in routersData:
+                    # redundantstate consistency has to be out since examineRouter only can analyse individual routers
+                    if r.isredundantrouter:
+                        if r.redundantstate == 'BACKUP':
+                            redundantstate['flags'] = redundantstate['flags'] | 1
+                        elif r.redundantstate == 'MASTER':
+                            redundantstate['flags'] = redundantstate['flags'] | 2
+                        redundantstate['states'] = redundantstate['states'] + [ r.redundantstate ]
                     diag = examineRouter(alarmedRoutersCache, vpc, r, routerTemplateId)
                     # We include 'escalate' in case opFilterNetworks is not set, to notify that we need it
                     # in order to fix this
@@ -738,7 +857,11 @@ def getAdvisoriesNetworks(alarmedRoutersCache):
                         results = results + [{ 'id': r.id, 'name': r.name, 'domain': vpc.domain, 'asset_type': 'router', 'adv_action': diag['action'], 'adv_safetylevel': diag['safetylevel'], 'adv_comment': diag['comment'] }]
 
 
-        diag = examineNetwork(vpc, escalated)
+        if not vpc.rr_type or not opFilterRouters:
+            # silence redundantstate check
+            redundantstate['flags'] = 1 | 2
+
+        diag = examineNetwork(vpc, escalated, redundantstate)
         if ( opFilterNetworks and (opFilterAll or (diag['action'] != None)) ):
             results = results + [{ 'id': vpc.id, 'type': 'VPC', 'name': vpc.name, 'domain': vpc.domain, 'rr_type': vpc.rr_type, 'restartrequired': vpc.restartrequired, 'state': vpc.state, 'asset_type': 'vpc', 'adv_action': diag['action'], 'adv_safetylevel': diag['safetylevel'], 'adv_comment': diag['comment'] }]
     
@@ -803,7 +926,7 @@ def getAdvisories():
 
         MGMT_SERVER_DATA['version'] = '__UNKNOWN__'
         MGMT_SERVER_DATA['version.normalized'] = '__UNKNOWN__'
-        mgtSsh = "if [ -n \"$(which dpkg 2>/dev/null)\" ] ; then dpkg -l cloudstack-management | tail -n 1 | awk '{print $3}'; elif [ -n \"$(which rpm 2>/dev/null)\" ] ; then rpm -qa | grep cloudstack-management | tail -n 1 | sed 's,cloudstack-management-,,g; s,\.el6.*$,,g' ; fi"
+        mgtSsh = "if [ -n \"$(which dpkg 2>/dev/null)\" ] ; then dpkg -l cloudstack-management | tail -n 1 | awk '{print $3}'; elif [ -n \"$(which rpm 2>/dev/null)\" ] ; then rpm -qa | grep cloudstack-management | tail -n 1 | sed 's,cloudstack-management-,,g; s,\.el6.*$,,g; s,\.el7.*,,g'; fi"
         retcode, output = c.ssh.runSSHCommand(MGMT_SERVER, mgtSsh)
         if retcode == 0:
             MGMT_SERVER_DATA['version'] = output
@@ -920,8 +1043,12 @@ def repairNetwork(adv):
             debug(2, ' + restart network.name=%s, .id=%s' % (adv['name'], adv['id']))
             if DRYRUN==1:
                 return -2, 'Skipping, dryrun is on.'
-            print "Restarting network '%s'" % (adv['name'])
-            ret = c.restartNetwork(adv['id'], True)
+            if adv['asset_type']=='network':
+                print "Restarting network '%s'" % (adv['name'])
+                ret = c.restartNetwork(adv['id'], True)
+            elif adv['asset_type']=='vpc':
+                print "Restarting vpc '%s'" % (adv['name'])
+                ret = c.restartVPC(adv['id'], True)
             debug(2, " + ret = " + str(ret))
             if ret and (hasattr(ret, 'success')) and (ret.success == True):
                 return 0, 'Network restarted without errors.'
@@ -961,7 +1088,7 @@ def cmdRepair():
     for adv in results:
         if opFilterRouters and (adv['asset_type'] == 'router'):
             applied,output = repairRouter(adv)
-        if opFilterNetworks and (adv['asset_type'] == 'network'):
+        if opFilterNetworks and (adv['asset_type'] in ['network', 'vpc']):
             applied, output = repairNetwork(adv)
         if opFilterSystemVMs and (adv['asset_type'] in ['cpvm', 'ssvm']):
             applied, output = repairSystemVM(adv)
