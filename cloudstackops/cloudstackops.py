@@ -627,6 +627,14 @@ class CloudStackOps(CloudStackOpsBase):
         # Call CloudStack API
         return self._callAPI(apicall)
 
+    # Destroy systemvm
+    def destroySystemVM(self, vmid):
+        apicall = destroySystemVm.destroySystemVmCmd()
+        apicall.id = str(vmid)
+
+        # Call CloudStack API
+        return self._callAPI(apicall)
+
     # Reboot virtualrouter
     def rebootRouter(self, vmid):
         apicall = rebootRouter.rebootRouterCmd()
