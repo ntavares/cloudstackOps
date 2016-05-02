@@ -42,6 +42,7 @@ class LswCloudStackOpsBase(CloudStackOpsBase):
     ACTION_UNKNOWN = 'unknown'
     ACTION_MANUAL = 'manual'
     ACTION_ESCALATE = 'escalate'
+    ACTION_S_DESTROY = 'destroy'
 
     STATE_ALLOCATED = 'Allocated'
 

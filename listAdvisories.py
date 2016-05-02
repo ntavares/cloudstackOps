@@ -73,6 +73,7 @@ def handleArguments(argv):
         '\n  -n \t\tScan networks (incl. VPCs)' + \
         '\n  -r \t\tScan routerVMs' + \
         '\n  -i \t\tScan instances' + \
+        '\n  -s \t\tScan systemVMs' + \
         '\n  -H \t\tScan hypervisors' + \
         '\n  -t \t\tScan resource usage' + \
         '\n  --all \tReport all assets of the selected types, independently of the presence of advisory' + \
@@ -80,7 +81,7 @@ def handleArguments(argv):
 
     try:
         opts, args = getopt.getopt(
-            argv, "hc:nriHt", [
+            argv, "hc:nriHts", [
                 "config-profile=", "debug", "exec", "deep", "live", "plain-display", "all", "repair", "safety=", 'email' ])
     except getopt.GetoptError as e:
         print "Error: " + str(e)
@@ -125,6 +126,8 @@ def handleArguments(argv):
             opFilters['host'] = True
         elif opt in ["--t"]:
             opFilters['resources'] = True
+        elif opt in ["-s"]:
+            opFilters['systemvms'] = True
         elif opt in ["--all"]:
             opFilters['all'] = True
         elif opt in ["--safety"]:
@@ -147,9 +150,9 @@ def handleArguments(argv):
         t.add_row([ "network", "Normal", "Flag restart_required", True, True ])
         t.add_row([ "network", "Normal", "Redundancy state inconsistency (needs -r)", True, True ])
         t.add_row([ "router", "Normal", "Redundancy state", True, True ])
-        t.add_row([ "router", "Normal", "Output of check_router.sh is non-zero (dmesg,swap,resolv,ping,fs,disk,password)", True, True ])
+        t.add_row([ "router", "Normal", "Output of check_routervms.py is non-zero (dmesg,swap,resolv,ping,fs,disk,password)", True, True ])
+        t.add_row([ "router", "Deep", "Checks if router is running with the latest systemvm template version", True, True ])
         t.add_row([ "router", "Normal", "Checks if router has requiresUpgrade flag on", True, True ])
-        t.add_row([ "router", "Deep", "Checks if router is running on the current systemvm template version", True, True ])
         t.add_row([ "router", "Deep", "Checks if router is based on the same package version than management (router.cloudstackversion)", True, True ])
         t.add_row([ "instance", "Normal", "Try to assess instance read-only state", True, False ])
         t.add_row([ "instance", "Normal", "Queries libvirt usage records for abusers (CPU, I/O, etc)", True, False ])
@@ -157,6 +160,8 @@ def handleArguments(argv):
         t.add_row([ "hypervisor", "Normal", "Load average", True, False ])
         t.add_row([ "hypervisor", "Normal", "Conntrack abusers", True, False ])
         t.add_row([ "hypervisor", "Normal", "check_libvirt_storage.sh correct functioning", True, False ])
+        t.add_row([ "systemvm", "Normal", "Output of check_appliance.py is non-zero (dmesg,swap,resolv,ping,fs,disk,websockify)", True, True ])
+        t.add_row([ "systemvm", "Deep", "Checks if systemvm is running with the latest systemvm template version", True, True ])
 
         print t
         
@@ -206,14 +211,6 @@ if DEBUG == 1:
     print "ApiKey: " + c.apikey
     print "SecretKey: " + c.secretkey
 
-#
-# TODO : examine conntrack
-
-
-
-
-
-
 
 def cmdListAdvisories():
 
@@ -258,7 +255,6 @@ def cmdListAdvisories():
 
         # Notify admin
         c.sendMail(c.mail_from, c.errors_to, msgSubject, emailbody)
-
 
 
 def cmdRepair():

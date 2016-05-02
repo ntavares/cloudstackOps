@@ -39,6 +39,7 @@ class LswCloudStackOps(CloudStackOps, LswCloudStackOpsBase):
     # Caches
     alarmedInstancesCache = {}
     alarmedRoutersCache = {}
+    routerTemplateId = None
 
     ENABLED_CHECKS_HOST = []
 
@@ -79,6 +80,29 @@ class LswCloudStackOps(CloudStackOps, LswCloudStackOpsBase):
         self.ENABLED_CHECKS_HOST += [ 'load-avg' ]
 
         signal.signal(signal.SIGINT, self.catch_ctrl_C)
+
+
+    def retrieveRouterTemplateId(self):
+        # One of the router tests we can make is to assess it's template version, if it's 
+        # current to the Global Setting router.template.kvm, so let's fetch that one.
+        confrtpl = self.getConfiguration("router.template.kvm" )
+        routerTemplateName = confrtpl[0].value
+        # Watch out for the use of "keyword". It should be "name", but Marvin API returns more results than expected..
+        routerTemplateData = self.listTemplates({'templatefilter': 'all', 'keyword': routerTemplateName, 'listall': 'True'})
+
+        if type(routerTemplateData) is not list:
+            print "ERROR: Failed to acquire the current router template"
+            sys.exit(2)
+
+        for r in routerTemplateData:
+            if r.name == routerTemplateName:
+                self.routerTemplateId = r.id
+
+        if self.routerTemplateId == None:
+            print "WARNING: Could not find the 'router.template.kvm' setting (name: %s)" % (routerTemplateName)
+            return False
+
+        return True
 
     def assignSshObject(self, ssh):
         self._ssh = ssh
@@ -226,7 +250,7 @@ class LswCloudStackOps(CloudStackOps, LswCloudStackOpsBase):
             mgtSsh = "/usr/local/bin/check_routervms.py " + router.name
             retcode, output = self._ssh.runSSHCommand(self.MGMT_SERVER, mgtSsh)
             if retcode != 0:
-                return "256", "check_routervms.py returned errors"
+                return 256, "check_routervms.py returned errors"
                 
             lines = output.split('\n')
             retcode = int(lines[-1])
@@ -295,7 +319,7 @@ class LswCloudStackOps(CloudStackOps, LswCloudStackOpsBase):
                 return LswCloudStackOpsBase.ACTION_R_RST_PASSWD_SRV, LswCloudStackOpsBase.SAFETY_BEST
             return LswCloudStackOpsBase.ACTION_UNKNOWN, LswCloudStackOpsBase.SAFETY_UNKNOWN
 
-        def examineRouter(network, router, currentRouterTemplateId):
+        def examineRouter(network, router):
             if router.requiresupgrade:
                 if network.rr_type:
                     return {'action': LswCloudStackOpsBase.ACTION_ESCALATE, 'safetylevel': LswCloudStackOpsBase.SAFETY_BEST, 'comment': 'Redundancy requires upgrade, redundancy present'}
@@ -320,8 +344,8 @@ class LswCloudStackOps(CloudStackOps, LswCloudStackOpsBase):
                 return {'action': action, 'safetylevel': safetylevel, 'comment': output + ": " + str(retcode) + " (" + resolveRouterErrorCode(retcode) + ")" }
 
             # We now assess if the router VM template is current
-            if (self.getFilter('deep')==1) and (currentRouterTemplateId!=None):
-                if router.templateid != currentRouterTemplateId:
+            if self.getFilter('deep') and (self.routerTemplateId!=None):
+                if router.templateid != self.routerTemplateId:
                     if network.rr_type:
                         return {'action': LswCloudStackOpsBase.ACTION_ESCALATE, 'safetylevel': LswCloudStackOpsBase.SAFETY_BEST, 'comment': 'Router using obsolete template, redundancy present'}
                     else:
@@ -331,7 +355,7 @@ class LswCloudStackOps(CloudStackOps, LswCloudStackOpsBase):
                             return {'action': LswCloudStackOpsBase.ACTION_ESCALATE, 'safetylevel': LswCloudStackOpsBase.SAFETY_DOWNTIME, 'comment': 'Router using obsolete template, no redundancy'}
 
             rversion = self.normalizePackageVersion(router.cloudstackversion)
-            if (self.getFilter('deep')==1) and (router.cloudstackversion):
+            if self.getFilter('deep') and (router.cloudstackversion):
                 rversion = self.normalizePackageVersion(router.cloudstackversion)
                 # If the router version is more recent than the package, then there probably emergency patching was made
                 # so, it's not really a problem, nor suprising.
@@ -346,26 +370,6 @@ class LswCloudStackOps(CloudStackOps, LswCloudStackOpsBase):
                     
 
             return {'action': None, 'safetylevel': LswCloudStackOpsBase.SAFETY_NA, 'comment': ''}
-
-
-        # One of the router tests we can make is to assess it's template version, if it's 
-        # current to the Global Setting router.template.kvm, so let's fetch that one.
-        confrtpl = self.getConfiguration("router.template.kvm" )
-        routerTemplateName = confrtpl[0].value
-        # Watch out for the use of "keyword". It should be "name", but Marvin API returns more results than expected..
-        routerTemplateData = self.listTemplates({'templatefilter': 'all', 'keyword': routerTemplateName, 'listall': 'True', 'state': 'Active'})
-        routerTemplateId = None
-        
-        if type(routerTemplateData) is not list:
-            print "ERROR: Failed to acquire the current router template"
-            sys.exit(2)
-
-        for r in routerTemplateData:
-            if r.name == routerTemplateName:
-                routerTemplateId = r.id
-
-        if routerTemplateId == None:
-            print "WARNING: Could not find the 'router.template.kvm' setting (name: %s)" % (routerTemplateName)
 
 
         networkData = self.listNetworks({})
@@ -403,7 +407,7 @@ class LswCloudStackOps(CloudStackOps, LswCloudStackOpsBase):
                                 elif r.redundantstate == 'MASTER':
                                    redundantstate['flags'] = redundantstate['flags'] | 2
                                 redundantstate['states'] = redundantstate['states'] + [ r.redundantstate ]
-                            diag = examineRouter(network, r, routerTemplateId)
+                            diag = examineRouter(network, r)
                             if ( self.getFilter('all') or (diag['action'] != None) ):
                                 if diag['action'] == LswCloudStackOpsBase.ACTION_ESCALATE:
                                     escalated = escalated + [{ 'id': r.id, 'name': r.name, 'domain': network.domain, 'asset_type': 'router', 'adv_action': diag['action'], 'adv_safetylevel': diag['safetylevel'], 'adv_comment': diag['comment'] }]
@@ -437,7 +441,7 @@ class LswCloudStackOps(CloudStackOps, LswCloudStackOpsBase):
                             elif r.redundantstate == 'MASTER':
                                 redundantstate['flags'] = redundantstate['flags'] | 2
                             redundantstate['states'] = redundantstate['states'] + [ r.redundantstate ]
-                        diag = examineRouter(vpc, r, routerTemplateId)
+                        diag = examineRouter(vpc, r)
                         # We include 'escalate' in case opFilterNetworks is not set, to notify that we need it
                         # in order to fix this
                         if ( self.getFilter('all') or (diag['action'] != None) ):
@@ -460,6 +464,91 @@ class LswCloudStackOps(CloudStackOps, LswCloudStackOpsBase):
 
 
 
+    def getAdvisoriesSystemVMs(self):
+        self.debug(2, "getAdvisoriesSystemVMs : begin")
+        results = []
+        
+        def resolveSystemVMErrorCode(errorCode):
+            str = []
+            errorCode = int(errorCode)
+            if errorCode & 1:
+                str = str + [ 'dmesg' ]
+            if errorCode & 2:
+                str = str + [ 'swap' ]
+            if errorCode & 4:
+                str = str + [ 'resolver' ]
+            if errorCode & 8:
+                str = str + [ 'ping' ]
+            if errorCode & 16:
+                str = str + [ 'filesystem' ]
+            if errorCode & 32:
+                str = str + [ 'disk' ]
+            if errorCode & 64:
+                str = str + [ 'websockify' ]
+            if errorCode & 128:
+                str = str + [ 'reserved' ]
+            if errorCode & 256:
+                str = str + [ 'check_appliance.py' ]
+            return ",".join(str)
+
+        def examineSystemVMInternalsLive(svm):
+            self.debug(2, "   + svm: name: %s, ip=%s, host=%s, tpl=%s" % (svm.name, svm.linklocalip, svm.hostname, (svm.version if svm.templateversion==None else svm.templateversion)))
+
+            mgtSsh = "/usr/local/bin/check_appliance.py " + svm.name
+            retcode, output = self._ssh.runSSHCommand(self.MGMT_SERVER, mgtSsh)
+            if retcode != 0:
+                return 256, "check_appliance.py returned errors"
+                
+            lines = output.split('\n')
+            retcode = int(lines[-1])
+            output = "check_appliance returned errors"
+            self.debug(2, "   + cmd: " + mgtSsh)
+            self.debug(2, "       + retcode=%d" % (retcode))
+
+            return retcode, output
+
+        def getActionForStatus(statuscode, svm):
+            # If the helper scripts do not exist at the mgt server, the call returns exit code 256.
+            if statuscode==256:
+                return LswCloudStackOpsBase.ACTION_ESCALATE, LswCloudStackOpsBase.SAFETY_NA
+
+            return LswCloudStackOpsBase.ACTION_S_DESTROY, LswCloudStackOpsBase.SAFETY_GOOD
+
+        def examineSystemVMInternals(svm):
+
+            # We now assess if the router VM template is current
+            if (self.getFilter('deep')) and (self.routerTemplateId!=None):
+                if svm.templateid != self.routerTemplateId:
+                    self.debug(2, ' + SystemvM using obsolete template: sysvm=' + svm.templateid + ' != r.t.kvm=' + self.routerTemplateId)
+                    return {'action': LswCloudStackOpsBase.ACTION_S_DESTROY, 'safetylevel': LswCloudStackOpsBase.SAFETY_GOOD, 'comment': 'SystemvM using obsolete template' }
+
+            # We should now try to assess the systemvm internal status (with SSH)
+            retcode, output = examineSystemVMInternalsLive(svm)
+
+            if retcode != 0:
+                action, safetylevel = getActionForStatus(retcode, svm)
+                return {'action': action, 'safetylevel': safetylevel, 'comment': output + ": " + str(retcode) + " (" + resolveSystemVMErrorCode(retcode) + ")" }
+
+            return {'action': None, 'safetylevel': LswCloudStackOpsBase.SAFETY_NA, 'comment': ''}
+
+        svmData = self.getSystemVmData({})
+        for svm in svmData:
+            print "name=" + svm.name + ", type=" + svm.systemvmtype
+            
+            svmtype = '????'
+            if svm.systemvmtype=='consoleproxy':
+                svmtype = 'cpvm'
+            elif svm.systemvmtype=='secondarystoragevm':
+                svmtype = 'ssvm'
+
+            # We should now try to assess the systemvm internal status (with SSH)
+            diag = examineSystemVMInternals(svm)
+            
+            if ( self.getFilter('all') or (diag['action'] != None) ):
+                results = results + [{ 'id': svm.id, 'name': svm.name, 'domain': svm.domain, 'asset_type': svmtype, 'adv_action': diag['action'], 'adv_safetylevel': diag['safetylevel'], 'adv_comment': diag['comment'] }]
+
+        self.debug(2, "getAdvisoriesSystemVMs : end")
+        return results
 
 
 
@@ -476,10 +565,12 @@ class LswCloudStackOps(CloudStackOps, LswCloudStackOpsBase):
 
     def getAdvisories(self):
             
+        self.retrieveRouterTemplateId()
+
         self.MGMT_SERVER_DATA = self._ssh.testMgmtServerConnection(self.MGMT_SERVER)
 
         results = []
-        if self.getFilter('networks') or self.isFilterSeT('routers'):
+        if self.getFilter('networks') or self.getFilter('routers'):
             self.setAlarmedRoutersCache( self._ssh.retrieveAlarmedRoutersCache(self.MGMT_SERVER) )
             results = results + self.getAdvisoriesNetworks()
         if self.getFilter('instances') or self.getFilter('hosts'):
@@ -490,6 +581,8 @@ class LswCloudStackOps(CloudStackOps, LswCloudStackOpsBase):
             results = results + self.getAdvisoriesInstances()
         if self.getFilter('resources'):
             results = results + self._ssh.getAdvisoriesResources(self.MGMT_SERVER)
+        if self.getFilter('systemvms'):
+            results = results + self.getAdvisoriesSystemVMs()
 
         def getSortKey(item):
             return item['asset_type'].upper() + '-' + item['name'].upper() 
@@ -558,6 +651,27 @@ class LswCloudStackOps(CloudStackOps, LswCloudStackOpsBase):
 
         return -1, 'Not implemented'
 
+    def repairSystemVM(adv):
+        self.debug(2, "repairSystemVM(): systemvm:%s, action:%s" % (adv['name'], adv['adv_action']))
+        
+        if adv['adv_action'] == None:
+            return -2, ''
+
+        if adv['adv_action']==LswCloudStackOpsBase.ACTION_S_DESTROY:
+            if self.getFilter('safetylevel')==adv['adv_safetylevel']:
+                self.debug(2, ' + destroy systemvm.name=%s, .id=%s' % (adv['name'], adv['id']))
+                if self.DRYRUN==1:
+                    return -2, 'Skipping, dryrun is on.'
+                print "Destroying systemVM '%s'" % (adv['name'])
+                ret = self.destroySystemVM(adv['id'])
+                self.debug(2, " + ret = " + str(ret))
+                
+                return 0, 'SystemVM destroyed without errors.'
+            else:
+                return -2, 'Ignored by SafetyLevel scope (' + LswCloudStackOpsBase.translateSafetyLevel(SAFETYLEVEL) + ')'
+
+        return -1, 'Not implemented'
+
 
     def runRepair(self):
         self.debug(2, "runRepair : begin")
@@ -568,6 +682,8 @@ class LswCloudStackOps(CloudStackOps, LswCloudStackOpsBase):
                 applied,output = self.repairRouter(adv)
             if self.getFilter('networks') and (adv['asset_type'] in ['network', 'vpc']):
                 applied, output = self.repairNetwork(adv)
+            if self.getFilter('systemvms') and (adv['asset_type'] in ['cpvm', 'ssvm']):
+                applied, output = self.repairSystemVM(adv)
             if applied==0:
                 adv['repair_code'] = 'OK'
                 adv['repair_msg'] = 'Repair successful: ' + output
