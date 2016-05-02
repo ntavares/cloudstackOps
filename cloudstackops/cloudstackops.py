@@ -312,8 +312,6 @@ class CloudStackOps(CloudStackOpsBase):
             isProjectVm = 'false'
         elif csApiCall == "listHosts":
             apicall = listHosts.listHostsCmd()
-        elif csApiCall == "listZones":
-            apicall = listZones.listZonesCmd()
         elif csApiCall == "listPods":
             apicall = listPods.listPodsCmd()
         elif csApiCall == "listZones":
@@ -1863,6 +1861,14 @@ class CloudStackOps(CloudStackOpsBase):
     def deleteUser(self, userid):
         apicall = deleteUser.deleteUserCmd()
         apicall.id = userid
+        
+        # Call CloudStack API
+        return self._callAPI(apicall)
+
+    def listZones(self, args):
+        apicall = listZones.listZonesCmd()
+        apicall.id = args['id'] if 'id' in args else None
+        apicall.name = args['name'] if 'name' in args else None
         
         # Call CloudStack API
         return self._callAPI(apicall)

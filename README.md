@@ -124,6 +124,9 @@ You also need `pretty table`.
 
 `yum -y install mysql-connector-python`
 
+.. some extra for some extra juice
+`pip install -Iv dnspython`
+
 Tips
 ----
 * Always run in `DRY-mode` first, so you get an idea what will happen.

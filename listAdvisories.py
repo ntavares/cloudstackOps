@@ -76,12 +76,13 @@ def handleArguments(argv):
         '\n  -s \t\tScan systemVMs' + \
         '\n  -H \t\tScan hypervisors' + \
         '\n  -t \t\tScan resource usage' + \
+        '\n  -C \t\tScan configuration for errors' + \
         '\n  --all \tReport all assets of the selected types, independently of the presence of advisory' + \
         '\n  --safety <safety> \tFilter out advisories that are not at the specified safety level (default: ' + lswcloudstackopsbase.LswCloudStackOpsBase.translateSafetyLevel(opFilters['safetylevel']) + ')'
 
     try:
         opts, args = getopt.getopt(
-            argv, "hc:nriHts", [
+            argv, "hc:nriHtsC", [
                 "config-profile=", "debug", "exec", "deep", "live", "plain-display", "all", "repair", "safety=", 'email' ])
     except getopt.GetoptError as e:
         print "Error: " + str(e)
@@ -128,6 +129,8 @@ def handleArguments(argv):
             opFilters['resources'] = True
         elif opt in ["-s"]:
             opFilters['systemvms'] = True
+        elif opt in ["-C"]:
+            opFilters['config'] = True
         elif opt in ["--all"]:
             opFilters['all'] = True
         elif opt in ["--safety"]:
@@ -162,6 +165,7 @@ def handleArguments(argv):
         t.add_row([ "hypervisor", "Normal", "check_libvirt_storage.sh correct functioning", True, False ])
         t.add_row([ "systemvm", "Normal", "Output of check_appliance.py is non-zero (dmesg,swap,resolv,ping,fs,disk,websockify)", True, True ])
         t.add_row([ "systemvm", "Deep", "Checks if systemvm is running with the latest systemvm template version", True, True ])
+        t.add_row([ "config", "Normal", "Checks parts of configuration (incl. Zone definitions) for problems", True, False ])
 
         print t
         

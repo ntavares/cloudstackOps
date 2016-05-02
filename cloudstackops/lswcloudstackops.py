@@ -27,8 +27,14 @@ import os.path
 import pprint
 import signal
 import re
+import sys
 
-
+try:
+    import dns.resolver
+except:
+    print "Error: Please install dnspython library to resolver:"
+    print "       pip install dnspython"
+    sys.exit(1)
 
 
 class LswCloudStackOps(CloudStackOps, LswCloudStackOpsBase):
@@ -561,7 +567,25 @@ class LswCloudStackOps(CloudStackOps, LswCloudStackOpsBase):
         self.alarmedInstancesCache = cache
         return True
 
+    def getAdvisoriesConfiguration(self):
+        results = []
+        self.debug(2, "getAdvisoriesConfiguration : begin")
 
+        my_resolver = dns.resolver.Resolver()
+
+        zonedata = self.listZones({})
+        for zone in zonedata:
+            for dnsx in ['dns1', 'dns2']:
+                if hasattr(zone, dnsx):
+                    my_resolver.nameservers = [ getattr(zone, dnsx) ]
+                    try:
+                        dns.exception.Timeout = 3
+                        answer = my_resolver.query('www.google.com')
+                    except:
+                        results = results + [{ 'id': zone.id, 'name': zone.name, 'domain': '-', 'asset_type': 'config', 'adv_action': LswCloudStackOpsBase.ACTION_MANUAL, 'adv_safetylevel': LswCloudStackOpsBase.SAFETY_BEST, 'adv_comment': 'Zone \'%s\' has parameter \'%s\' with invalid value: %s' % (zone.name, dnsx, getattr(zone, dnsx)) }]
+
+        self.debug(2, "getAdvisoriesConfiguration : end")
+        return results
 
     def getAdvisories(self):
             
@@ -583,6 +607,8 @@ class LswCloudStackOps(CloudStackOps, LswCloudStackOpsBase):
             results = results + self._ssh.getAdvisoriesResources(self.MGMT_SERVER)
         if self.getFilter('systemvms'):
             results = results + self.getAdvisoriesSystemVMs()
+        if self.getFilter('config'):
+            results = results + self.getAdvisoriesConfiguration()
 
         def getSortKey(item):
             return item['asset_type'].upper() + '-' + item['name'].upper() 
