@@ -364,6 +364,9 @@ class LswCloudStackOps(CloudStackOps, LswCloudStackOpsBase):
                         else:
                             return {'action': LswCloudStackOpsBase.ACTION_ESCALATE, 'safetylevel': LswCloudStackOpsBase.SAFETY_DOWNTIME, 'comment': 'Router using obsolete template, no redundancy'}
 
+            # be nice with (really old) legacy
+            if not hasattr(router, 'cloudstackversion') or (router.cloudstackversion==None):
+                router.cloudstackversion = ''
             rversion = self.normalizePackageVersion(router.cloudstackversion)
             if self.getFilter('deep') and (router.cloudstackversion):
                 rversion = self.normalizePackageVersion(router.cloudstackversion)
