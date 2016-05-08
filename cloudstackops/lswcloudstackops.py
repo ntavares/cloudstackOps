@@ -421,6 +421,7 @@ class LswCloudStackOps(CloudStackOps, LswCloudStackOpsBase):
                                 elif r.redundantstate == 'MASTER':
                                    redundantstate['flags'] = redundantstate['flags'] | 2
                                 redundantstate['states'] = redundantstate['states'] + [ r.redundantstate ]
+
                             # Examining a non-Running router can generate false results, as ACS is not operating it anymore
                             if r.state == 'Running':
                                 # We note down that at least one router was found online, so we can consider the 
@@ -430,6 +431,7 @@ class LswCloudStackOps(CloudStackOps, LswCloudStackOpsBase):
                                 diag = examineRouter(network, r)
                             else:
                                 diag = {'action': None, 'safetylevel': LswCloudStackOpsBase.SAFETY_NA, 'comment': 'RouterVM is not Running. Skipped'}
+
                             if ( self.getFilter('all') or (diag['action'] != None) ):
                                 if diag['action'] == LswCloudStackOpsBase.ACTION_ESCALATE:
                                     escalated = escalated + [{ 'id': r.id, 'name': r.name, 'domain': network.domain, 'asset_type': 'router', 'adv_action': diag['action'], 'adv_safetylevel': diag['safetylevel'], 'adv_comment': diag['comment'] }]
@@ -463,7 +465,17 @@ class LswCloudStackOps(CloudStackOps, LswCloudStackOpsBase):
                             elif r.redundantstate == 'MASTER':
                                 redundantstate['flags'] = redundantstate['flags'] | 2
                             redundantstate['states'] = redundantstate['states'] + [ r.redundantstate ]
-                        diag = examineRouter(vpc, r)
+
+                        # Examining a non-Running router can generate false results, as ACS is not operating it anymore
+                        if r.state == 'Running':
+                            # We note down that at least one router was found online, so we can consider the 
+                            # redundantstate to be meaningfull
+                            if r.state == 'Running':
+                               redundantstate['flags'] = redundantstate['flags'] | 4
+                            diag = examineRouter(vpc, r)
+                        else:
+                            diag = {'action': None, 'safetylevel': LswCloudStackOpsBase.SAFETY_NA, 'comment': 'RouterVM is not Running. Skipped'}
+
                         # We include 'escalate' in case opFilterNetworks is not set, to notify that we need it
                         # in order to fix this
                         if ( self.getFilter('all') or (diag['action'] != None) ):
@@ -474,7 +486,7 @@ class LswCloudStackOps(CloudStackOps, LswCloudStackOpsBase):
 
             if not vpc.rr_type or not self.getFilter('routers'):
                 # silence redundantstate check
-                redundantstate['flags'] = 1 | 2
+                redundantstate['flags'] = redundantstate['flags'] | 1 | 2
 
             diag = examineNetwork(vpc, escalated, redundantstate)
             if ( self.getFilter('networks') and (self.getFilter('all') or (diag['action'] != None)) ):
