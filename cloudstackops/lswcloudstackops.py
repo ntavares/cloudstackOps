@@ -252,17 +252,21 @@ class LswCloudStackOps(CloudStackOps, LswCloudStackOpsBase):
                     return 0, None
 
             #mgtSsh = "ssh -At %s ssh -At -p 3922 -i /root/.ssh/id_rsa.cloud -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no root@%s ls -la" % (router.hostname, router.linklocalip)
-            # FIXME TODO In CentOS mgt servers, the script is /usr/local/bin/check_routervms.sh
-            mgtSsh = "/usr/local/bin/check_routervms.py " + router.name
+            if self.MGMT_SERVER_DATA['dist'] == 'RedHat':
+                mgtSsh = "/usr/local/bin/check_routervms.sh " + router.name
+            else:
+                mgtSsh = "/usr/local/bin/check_routervms.py " + router.name
+
+            self.debug(2, "     + cmd: " + mgtSsh)
             retcode, output = self._ssh.runSSHCommand(self.MGMT_SERVER, mgtSsh)
             if retcode != 0:
                 return 256, "check_routervms.py returned errors"
-                
-            lines = output.split('\n')
-            retcode = int(lines[-1])
-            output = "check_routervms returned errors"
-            self.debug(2, "   + cmd: " + mgtSsh)
-            self.debug(2, "       + retcode=%d" % (retcode))
+
+            if self.MGMT_SERVER_DATA['dist'] == 'Debian':                
+                lines = output.split('\n')
+                retcode = int(lines[-1])
+                output = "check_routervms returned errors"
+                self.debug(2, "       + retcode=%d" % (retcode))
 
             # Use the cache anyway, to mark already checked routers:
             self.alarmedRoutersCache[router.name] = { 'network': router.network, 'code': retcode, 'checked': True }
