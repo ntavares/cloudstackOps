@@ -223,7 +223,8 @@ class LswCloudStackOps(CloudStackOps, LswCloudStackOpsBase):
                          return {'action': LswCloudStackOpsBase.ACTION_N_RESTART, 'safetylevel': LswCloudStackOpsBase.SAFETY_DOWNTIME, 'comment': 'Restart flag on, no redundancy'}
 
             self.debug(2, '   + check redundantstate (rr_type: ' + str(network.rr_type) + ') => ' + str(redundantstate) )
-            if redundantstate['flags'] != 3:
+            # Only look at the combined redundantstate if at least one router was found Running
+            if ((redundantstate['flags']&4) and ((redundantstate['flags'] & 3)!=3)):
                 return {'action': LswCloudStackOpsBase.ACTION_N_RESTART, 'safetylevel': LswCloudStackOpsBase.SAFETY_UNKNOWN, 'comment': 'Redundancy state is found inconsistent (' + ','.join(redundantstate['states']) + ')'}
 
             if len(advRouters)>0:
@@ -251,23 +252,22 @@ class LswCloudStackOps(CloudStackOps, LswCloudStackOpsBase):
                 if self.alarmedRoutersCache[router.name]['checked']:
                     return 0, None
 
-            if router.state=='Running':
-                #mgtSsh = "ssh -At %s ssh -At -p 3922 -i /root/.ssh/id_rsa.cloud -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no root@%s ls -la" % (router.hostname, router.linklocalip)
-                if self.MGMT_SERVER_DATA['dist'] == 'RedHat':
-                    mgtSsh = "/usr/local/bin/check_routervms.sh " + router.name
-                else:
-                    mgtSsh = "/usr/local/bin/check_routervms.py " + router.name
-    
-                self.debug(2, "     + cmd: " + mgtSsh)
-                retcode, output = self._ssh.runSSHCommand(self.MGMT_SERVER, mgtSsh)
-                if retcode != 0:
-                    return 256, "check_routervms.py returned errors"
-    
-                if self.MGMT_SERVER_DATA['dist'] == 'Debian':                
-                    lines = output.split('\n')
-                    retcode = int(lines[-1])
-                    output = "check_routervms returned errors"
-                    self.debug(2, "       + retcode=%d" % (retcode))
+            #mgtSsh = "ssh -At %s ssh -At -p 3922 -i /root/.ssh/id_rsa.cloud -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no root@%s ls -la" % (router.hostname, router.linklocalip)
+            if self.MGMT_SERVER_DATA['dist'] == 'RedHat':
+                mgtSsh = "/usr/local/bin/check_routervms.sh " + router.name
+            else:
+                mgtSsh = "/usr/local/bin/check_routervms.py " + router.name
+
+            self.debug(2, "     + cmd: " + mgtSsh)
+            retcode, output = self._ssh.runSSHCommand(self.MGMT_SERVER, mgtSsh)
+            if retcode != 0:
+                return 256, "check_routervms.py returned errors"
+
+            if self.MGMT_SERVER_DATA['dist'] == 'Debian':                
+                lines = output.split('\n')
+                retcode = int(lines[-1])
+                output = "check_routervms returned errors"
+                self.debug(2, "       + retcode=%d" % (retcode))
 
             # Use the cache anyway, to mark already checked routers:
             self.alarmedRoutersCache[router.name] = { 'network': router.network, 'code': retcode, 'checked': True }
@@ -346,9 +346,9 @@ class LswCloudStackOps(CloudStackOps, LswCloudStackOpsBase):
             # We should now try to assess the router internal status (with SSH)
             #retcode, output = examineRouterInternals(router)
             if self.getFilter('live'):
-                retcode, output = examineRouterInternalsQuick(router)
-            else:
                 retcode, output = examineRouterInternalsLive(router)
+            else:
+                retcode, output = examineRouterInternalsQuick(router)
 
             if retcode != 0:
                 action, safetylevel = getActionForStatus(retcode, router, network.rr_type, network.type)
@@ -421,7 +421,15 @@ class LswCloudStackOps(CloudStackOps, LswCloudStackOpsBase):
                                 elif r.redundantstate == 'MASTER':
                                    redundantstate['flags'] = redundantstate['flags'] | 2
                                 redundantstate['states'] = redundantstate['states'] + [ r.redundantstate ]
-                            diag = examineRouter(network, r)
+                            # Examining a non-Running router can generate false results, as ACS is not operating it anymore
+                            if r.state == 'Running':
+                                # We note down that at least one router was found online, so we can consider the 
+                                # redundantstate to be meaningfull
+                                if r.state == 'Running':
+                                   redundantstate['flags'] = redundantstate['flags'] | 4
+                                diag = examineRouter(network, r)
+                            else:
+                                diag = {'action': None, 'safetylevel': LswCloudStackOpsBase.SAFETY_NA, 'comment': 'RouterVM is not Running. Skipped'}
                             if ( self.getFilter('all') or (diag['action'] != None) ):
                                 if diag['action'] == LswCloudStackOpsBase.ACTION_ESCALATE:
                                     escalated = escalated + [{ 'id': r.id, 'name': r.name, 'domain': network.domain, 'asset_type': 'router', 'adv_action': diag['action'], 'adv_safetylevel': diag['safetylevel'], 'adv_comment': diag['comment'] }]
@@ -429,7 +437,7 @@ class LswCloudStackOps(CloudStackOps, LswCloudStackOpsBase):
 
             if not network.rr_type or not self.getFilter('routers') or (network.state!='Implemented'):
                 # silence redundantstate check
-                redundantstate['flags'] = 1 | 2
+                redundantstate['flags'] = redundantstate['flags'] | 1 | 2
 
             diag = examineNetwork(network, escalated, redundantstate)
             if ( self.getFilter('networks') and (self.getFilter('all') or (diag['action'] != None)) ):
