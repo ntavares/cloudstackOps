@@ -137,7 +137,7 @@ class LswCloudStackOpsSSH(CloudStackOpsSSH, LswCloudStackOpsBase):
             MGMT_SERVER_DATA['version.normalized'] = self.normalizePackageVersion(output)
         self.debug(2, '    + Got MGMTVERSION: ' + MGMT_SERVER_DATA['version'] + ', normalized: ' + MGMT_SERVER_DATA['version.normalized'])
 
-        mgtSsh = "if [ -n \"$(which dpkg 2>/dev/null)\" ] ; then echo Debian; elif [ -n \"$(which rpm 2>/dev/null)\" ] ; then echo RedHat ; fi"
+        mgtSsh = 'if [ -n "$(which dpkg 2>/dev/null)" ] ; then echo Debian; elif [ -n "$(which rpm 2>/dev/null)" ] ; then echo RedHat ; fi'
         retcode, output = self.runSSHCommand(host, mgtSsh)
         MGMT_SERVER_DATA['dist'] = output
         self.debug(2, '    + Got dist: ' + MGMT_SERVER_DATA['dist'])
